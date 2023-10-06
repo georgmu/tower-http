@@ -31,10 +31,46 @@ async fn basic() {
 }
 
 #[tokio::test]
+async fn basic_with_mount_point() {
+    let svc = ServeDir::new("..").with_mount_point("/files");
+
+    let req = Request::builder()
+        .uri("/files/README.md")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.oneshot(req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()["content-type"], "text/markdown");
+
+    let body = body_into_text(res.into_body()).await;
+
+    let contents = std::fs::read_to_string("../README.md").unwrap();
+    assert_eq!(body, contents);
+}
+
+#[tokio::test]
 async fn basic_with_index() {
     let svc = ServeDir::new("../test-files");
 
     let req = Request::new(Body::empty());
+    let res = svc.oneshot(req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()[header::CONTENT_TYPE], "text/html");
+
+    let body = body_into_text(res.into_body()).await;
+    assert_eq!(body, "<b>HTML!</b>\n");
+}
+
+#[tokio::test]
+async fn basic_with_index_and_mount_point() {
+    let svc = ServeDir::new("../test-files").with_mount_point("/files");
+
+    let req = Request::builder()
+        .uri("/files/")
+        .body(Body::empty())
+        .unwrap();
     let res = svc.oneshot(req).await.unwrap();
 
     assert_eq!(res.status(), StatusCode::OK);
@@ -386,10 +422,45 @@ async fn redirect_to_trailing_slash_on_dir() {
 }
 
 #[tokio::test]
+async fn redirect_to_trailing_slash_on_dir_with_mount_point() {
+    let svc = ServeDir::new(".").with_mount_point("/files");
+
+    let req = Request::builder()
+        .uri("/files")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.oneshot(req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::TEMPORARY_REDIRECT);
+
+    let location = &res.headers()[http::header::LOCATION];
+    assert_eq!(location, "/files/");
+}
+
+#[tokio::test]
 async fn empty_directory_without_index() {
     let svc = ServeDir::new(".").append_index_html_on_directories(false);
 
     let req = Request::new(Body::empty());
+    let res = svc.oneshot(req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    assert!(res.headers().get(header::CONTENT_TYPE).is_none());
+
+    let body = body_into_text(res.into_body()).await;
+    assert!(body.is_empty());
+}
+
+#[tokio::test]
+async fn empty_directory_without_index_and_mount_point() {
+    let svc = ServeDir::new("..")
+        .with_mount_point("/files")
+        .append_index_html_on_directories(false);
+
+    let req = Request::builder()
+        .uri("/files/test-files/")
+        .body(Body::empty())
+        .unwrap();
     let res = svc.oneshot(req).await.unwrap();
 
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
@@ -650,11 +721,57 @@ async fn with_fallback_svc() {
 }
 
 #[tokio::test]
+async fn with_fallback_svc_and_mount_point() {
+    async fn fallback<B>(req: Request<B>) -> Result<Response<Body>, Infallible> {
+        Ok(Response::new(Body::from(format!(
+            "from fallback {}",
+            req.uri().path()
+        ))))
+    }
+
+    let svc = ServeDir::new("..")
+        .with_mount_point("/files")
+        .fallback(tower::service_fn(fallback));
+
+    let req = Request::builder()
+        .uri("/files/doesnt-exist")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.oneshot(req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body = body_into_text(res.into_body()).await;
+    assert_eq!(body, "from fallback /files/doesnt-exist");
+}
+
+#[tokio::test]
 async fn with_fallback_serve_file() {
     let svc = ServeDir::new("..").fallback(ServeFile::new("../README.md"));
 
     let req = Request::builder()
         .uri("/doesnt-exist")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.oneshot(req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()["content-type"], "text/markdown");
+
+    let body = body_into_text(res.into_body()).await;
+
+    let contents = std::fs::read_to_string("../README.md").unwrap();
+    assert_eq!(body, contents);
+}
+
+#[tokio::test]
+async fn with_fallback_serve_file_and_mount_point() {
+    let svc = ServeDir::new("..")
+        .with_mount_point("/files")
+        .fallback(ServeFile::new("../README.md"));
+
+    let req = Request::builder()
+        .uri("/files/doesnt-exist")
         .body(Body::empty())
         .unwrap();
     let res = svc.oneshot(req).await.unwrap();

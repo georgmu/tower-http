@@ -60,6 +60,7 @@ const DEFAULT_CAPACITY: usize = 65536;
 #[derive(Clone, Debug)]
 pub struct ServeDir<F = DefaultServeDirFallback> {
     base: PathBuf,
+    mount_point: String,
     buf_chunk_size: usize,
     precompressed_variants: Option<PrecompressedVariants>,
     // This is used to specialise implementation for
@@ -80,6 +81,7 @@ impl ServeDir<DefaultServeDirFallback> {
 
         Self {
             base,
+            mount_point: String::new(),
             buf_chunk_size: DEFAULT_CAPACITY,
             precompressed_variants: None,
             variant: ServeVariant::Directory {
@@ -96,6 +98,7 @@ impl ServeDir<DefaultServeDirFallback> {
     {
         Self {
             base: path.as_ref().to_owned(),
+            mount_point: String::new(),
             buf_chunk_size: DEFAULT_CAPACITY,
             precompressed_variants: None,
             variant: ServeVariant::SingleFile { mime },
@@ -128,6 +131,32 @@ impl<F> ServeDir<F> {
     /// The default capacity is 64kb.
     pub fn with_buf_chunk_size(mut self, chunk_size: usize) -> Self {
         self.buf_chunk_size = chunk_size;
+        self
+    }
+
+    /// Serve files in a sub directory of the URL path
+    ///
+    /// Instead of searching for the whole requested path in the path, the mount point
+    /// is stripped from the requested path before looking up the file.
+    ///
+    /// ```
+    /// use tower_http::services::ServeDir;
+    ///
+    /// // This will serve file "assets/foo.txt" via "GET /files/foo.txt"
+    /// let service = ServeDir::new("assets").with_mount_point("/files");
+    ///
+    /// # async {
+    /// // Run our service using `hyper`
+    /// let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 3000));
+    /// hyper::Server::bind(&addr)
+    ///     .serve(tower::make::Shared::new(service))
+    ///     .await
+    ///     .expect("server error");
+    /// # };
+    /// ```
+
+    pub fn with_mount_point(mut self, mount_point: &str) -> Self {
+        self.mount_point = mount_point.trim_end_matches('/').to_string();
         self
     }
 
@@ -229,6 +258,7 @@ impl<F> ServeDir<F> {
     pub fn fallback<F2>(self, new_fallback: F2) -> ServeDir<F2> {
         ServeDir {
             base: self.base,
+            mount_point: self.mount_point,
             buf_chunk_size: self.buf_chunk_size,
             precompressed_variants: self.precompressed_variants,
             variant: self.variant,
@@ -383,9 +413,13 @@ impl<F> ServeDir<F> {
             (fallback, fallback_req)
         });
 
+        let Some(requested_path) = req.uri().path().strip_prefix(&self.mount_point) else {
+            return ResponseFuture::invalid_path(fallback_and_request);
+        };
+
         let path_to_file = match self
             .variant
-            .build_and_validate_path(&self.base, req.uri().path())
+            .build_and_validate_path(&self.base, requested_path)
         {
             Some(path_to_file) => path_to_file,
             None => {
